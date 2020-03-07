@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+
+BCK_DIR=/data/backup/system
+SCRIPT=$0
+
+
+_usage() {
+  cat <<HELP__usage
+
+  usage: $SCRIPT <command> [<args>]
+
+    init <dir>        Create new backup repository
+    status            Show status
+    add [file(s)]     Add file or directory to backup location
+    restore [file(s)] Restore file or directory
+    sync [file(s)]    Copy changes files to backup location
+    diff <file>       Show differences with backup
+
+HELP__usage
+  exit 2
+}
+
+
+main() {
+  !(($#)) && _usage
+
+  _check_dir
+
+  cmd=$1 ; shift
+  args=$*
+
+  declare -a diffs=()
+  declare -a missing=()
+
+  case $cmd in
+    status)   _status $* ;;
+    add)      _add $* ;;
+    restore)  _restore $* ;;
+    sync)     _sync $* ;;
+    diff)     _diff $* ;;
+    *)        _usage ;;
+  esac
+}
+
+
+_check_dir() {
+  if [ ! -d ${BCK_DIR:?not set} ] ; then
+    echo ERROR: $BCK_DIR does not exist
+    exit 1
+  fi
+}
+
+_status() {
+  for f in $(find "$BCK_DIR" ! -path '*/.git*' -type f) ; do
+    cmp --silent "$f" "${f/$BCK_DIR/}"
+    cmp=$?
+    case $cmp in 
+      1) diffs+=("${f/$BCK_DIR/}") ;;
+      2) missing+=("${f/$BCK_DIR/}" ) ;;
+    esac
+  done
+
+  if [ "$1" == '-s' ] ; then
+    return
+  fi
+
+  printf "\ndiff:\n"
+  for f in "${diffs[@]}" ; do
+    printf "\t$f\n"
+  done
+
+  printf "\nmissing:\n"
+  for f in "${missing[@]}" ; do
+    printf "\t$f\n"
+  done
+
+  printf "\ngit status:\n"
+  if [ -d "$BCK_DIR/.git" ] ; then
+    git -c color.ui=always -C "$BCK_DIR" status | sed 's/^/\t/'
+  else
+    echo git repository not set up
+  fi
+}
+
+_add() {
+  [ -z $1 ] && _usage
+  for f in $* ; do
+    if [ -a "$f" ] ; then
+      echo adding $f to backup location "${BCK_DIR}${f}"
+      mkdir -p "${BCK_DIR}${f%/*}"
+      cp -p "$f" "${BCK_DIR}${f}"
+    else
+      echo ERROR: $f does not exist
+    fi
+  done
+}
+
+_restore() {
+  [ -z $1 ] && _usage
+  for f in $* ; do
+    if [ -a "${BCK_DIR}${f}" ] ; then
+      printf "restoring ${BCK_DIR}${f} \n      --> $f\n"
+      cp "${BCK_DIR}${f}" "${f/$BCK_DIR/}"
+    else
+      echo ERROR: "${BCK_DIR}${f}" does not exist
+    fi
+  done
+}
+
+_sync() {
+  _status -s
+  for f in "${diffs[@]}" ; do
+    printf "copying $f \n    --> ${BCK_DIR}${f}\n"
+    cp "$f" "${BCK_DIR}${f}"
+  done
+}
+
+_diff() {
+  [ "$1" == '-s' ] && diff=sdiff && shift
+  for f in "$1" "${BCK_DIR}${1}" ; do
+    [ -a "$f" ] || { echo ERROR: $f does not exist; exit 1; }
+  done
+  ${diff:-diff} "$1" "${BCK_DIR}${1}"
+}
+
+main $*
